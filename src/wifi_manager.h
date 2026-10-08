@@ -283,33 +283,33 @@ private:
                       "</script></head><body>"
                       "<div class='card'>"
                       "<h2>🏀 NBA Display Wi-Fi Setup</h2>"
-                      "<p class='note'>เลือกเครือข่าย Wi-Fi ใกล้เคียงเพื่อเชื่อมต่อ</p>"
-                      "<a href='/rescan' class='rescan-btn'>🔄 สแกนใหม่ (Rescan)</a>"
+                      "<p class='note'>Select a nearby Wi-Fi network to connect</p>"
+                      "<a href='/rescan' class='rescan-btn'>🔄 Rescan</a>"
                       "<div style='clear:both;'></div>"
                       "<form action='/save' method='POST'>"
-                      "<label for='ssid_select'>📡 เลือก Wi-Fi ที่อยู่ใกล้เคียง (Select Wi-Fi):</label>"
+                      "<label for='ssid_select'>📡 Nearby Wi-Fi Networks:</label>"
                       "<select id='ssid_select' name='ssid_select' onchange='onSelectChange()' required>";
 
         if (apList.empty()) {
-            html += "<option value='__other__'>-- ไม่พบเครือข่าย (พิมพ์ชื่อเอง) --</option>";
+            html += "<option value='__other__'>-- No networks found (enter manually) --</option>";
         } else {
             for (const auto& ap : apList) {
                 int quality = min(max(2 * (ap.rssi + 100), 0), 100);
-                String sigText = (quality >= 75) ? "📶 แรง" : (quality >= 50 ? "📶 ปานกลาง" : "📶 อ่อน");
+                String sigText = (quality >= 75) ? "📶 Strong" : (quality >= 50 ? "📶 Good" : "📶 Weak");
                 String lock = ap.isEncrypted ? "🔒" : "🔓";
                 html += "<option value='" + ap.ssid + "'>" + ap.ssid + " (" + sigText + " " + String(quality) + "% • " + lock + ")</option>";
             }
-            html += "<option value='__other__'>✏️ พิมพ์ชื่ออื่น / Wi-Fi ที่ซ่อนอยู่ (Enter other SSID)...</option>";
+            html += "<option value='__other__'>✏️ Enter other / hidden SSID...</option>";
         }
 
         html += "</select>"
                 "<div id='custom_box' style='display:" + String(apList.empty() ? "block" : "none") + ";'>"
-                "<label for='custom_ssid'>ชื่อ Wi-Fi (SSID):</label>"
-                "<input type='text' id='custom_ssid' name='custom_ssid' placeholder='ระบุชื่อ Wi-Fi'>"
+                "<label for='custom_ssid'>Wi-Fi Name (SSID):</label>"
+                "<input type='text' id='custom_ssid' name='custom_ssid' placeholder='Enter Wi-Fi SSID'>"
                 "</div>"
-                "<label for='pass'>🔑 รหัสผ่าน Wi-Fi (Password):</label>"
-                "<input type='password' id='pass' name='pass' placeholder='ใส่รหัสผ่าน Wi-Fi (เว้นว่างได้ถ้าไม่มีรหัส)'>"
-                "<label for='fav'>⭐ ทีมโปรด (Favorite Team):</label>"
+                "<label for='pass'>🔑 Wi-Fi Password:</label>"
+                "<input type='password' id='pass' name='pass' placeholder='Enter password (leave blank if open)'>"
+                "<label for='fav'>⭐ Favorite Team:</label>"
                 "<select id='fav' name='fav'>"
                 "<option value='GS'" + String(favoriteTeam == "GS" || favoriteTeam == "GSW" ? " selected" : "") + ">Golden State Warriors (GSW)</option>"
                 "<option value='LAL'" + String(favoriteTeam == "LAL" ? " selected" : "") + ">Los Angeles Lakers (LAL)</option>"
@@ -342,17 +342,17 @@ private:
                 "<option value='DET'" + String(favoriteTeam == "DET" ? " selected" : "") + ">Detroit Pistons (DET)</option>"
                 "<option value='WSH'" + String(favoriteTeam == "WSH" ? " selected" : "") + ">Washington Wizards (WSH)</option>"
                 "</select>"
-                "<button type='submit' class='btn'>บันทึกและเชื่อมต่อ (Connect)</button>"
+                "<button type='submit' class='btn'>Save & Connect</button>"
                 "</form></div>";
 
         // Remembered Networks List
-        html += "<div class='card'><h3 style='margin-top:0;font-size:16px;color:#fdb927;'>เครือข่ายที่บันทึกไว้ (Remembered Networks):</h3>";
+        html += "<div class='card'><h3 style='margin-top:0;font-size:16px;color:#fdb927;'>Remembered Networks:</h3>";
         if (savedNetworks.empty()) {
-            html += "<p style='color:#8b949e;font-size:13px;'>ยังไม่มีเครือข่ายที่บันทึกไว้</p>";
+            html += "<p style='color:#8b949e;font-size:13px;'>No saved networks yet.</p>";
         } else {
             for (size_t i = 0; i < savedNetworks.size(); i++) {
                 html += "<div class='net-item'><span>📶 <b>" + savedNetworks[i].ssid + "</b></span>"
-                        "<a href='/delete?id=" + String(i) + "' class='del-btn'>ลบ (Remove)</a></div>";
+                        "<a href='/delete?id=" + String(i) + "' class='del-btn'>Remove</a></div>";
             }
         }
         html += "</div></body></html>";
@@ -378,9 +378,9 @@ private:
         String resp = "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
                       "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
                       "<style>body{background:#0d1117;color:#fff;text-align:center;padding:40px;font-family:sans-serif;}</style></head><body>"
-                      "<h2 style='color:#fdb927;'>บันทึกเรียบร้อยแล้ว!</h2>"
-                      "<p>กำลังเชื่อมต่อกับ <b>" + chosenSsid + "</b>...</p>"
-                      "<p style='color:#8b949e;'>หน้าจอบอร์ดกำลังรีสตาร์ทเพื่อเริ่มทำงาน</p>"
+                      "<h2 style='color:#fdb927;'>Saved Successfully!</h2>"
+                      "<p>Connecting to <b>" + chosenSsid + "</b>...</p>"
+                      "<p style='color:#8b949e;'>The display is restarting now to connect.</p>"
                       "</body></html>";
         server.send(200, "text/html", resp);
 

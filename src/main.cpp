@@ -11,10 +11,10 @@ NBAClient nba;
 MultiWiFiManager wifiMgr;
 
 // UI Modes:
-// 0 = Standby Desk Clock & Countdown (หน้าพักจอ / นาฬิกาโต๊ะทำงาน)
-// 1 = GSW Spotlight Match (ผลการแข่งขัน GSW เต็มจอ)
-// 2 = All Games Today (หน้ารวมผลทุกคู่ประจำวัน)
-// 3 = Standings / Rankings (อันดับตารางคะแนนสาย West & East)
+// 0 = Standby Desk Clock & Countdown (Desk clock & upcoming match countdown)
+// 1 = GSW Spotlight Match (Full box score for favorite team)
+// 2 = All Games Today (Scores and schedules for all NBA games)
+// 3 = Standings / Rankings (West & East conference standings)
 int currentMode = 0;
 int allGamesPageIndex = 0;
 int standingsConfIndex = 0;
