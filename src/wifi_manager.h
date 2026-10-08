@@ -180,6 +180,11 @@ public:
         dnsServer.start(53, "*", apIP);
 
         server.on("/", HTTP_GET, [this]() { handleRoot(); });
+        server.on("/rescan", HTTP_GET, [this]() {
+            WiFi.scanNetworks(true);
+            server.sendHeader("Location", "/");
+            server.send(303);
+        });
         server.on("/save", HTTP_POST, [this]() { handleSave(); });
         server.on("/delete", HTTP_GET, [this]() { handleDelete(); });
         server.on("/generate_204", [this]() { handleRoot(); });
@@ -207,97 +212,147 @@ public:
     }
 
 private:
+    struct ScannedAP {
+        String ssid;
+        int rssi;
+        bool isEncrypted;
+    };
+
     void handleRoot() {
+        // Scan for nearby Wi-Fi networks if not already scanned
         int n = WiFi.scanComplete();
-        if (n == -2) {
-            WiFi.scanNetworks(true); // scan in background
+        if (n < 0) {
+            n = WiFi.scanNetworks(false, true); // Active scan
         }
+
+        // Deduplicate and sort by signal strength
+        std::vector<ScannedAP> apList;
+        for (int i = 0; i < n; i++) {
+            String s = WiFi.SSID(i);
+            if (s.length() == 0) continue; // Skip hidden/empty
+
+            // Check if already in list
+            bool exists = false;
+            for (auto& item : apList) {
+                if (item.ssid == s) {
+                    exists = true;
+                    if (WiFi.RSSI(i) > item.rssi) item.rssi = WiFi.RSSI(i);
+                    break;
+                }
+            }
+            if (!exists) {
+                bool enc = (WiFi.encryptionType(i) != WIFI_AUTH_OPEN);
+                apList.push_back({s, WiFi.RSSI(i), enc});
+            }
+        }
+
+        // Sort by RSSI (strongest first)
+        std::sort(apList.begin(), apList.end(), [](const ScannedAP& a, const ScannedAP& b) {
+            return a.rssi > b.rssi;
+        });
 
         String html = "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
                       "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
-                      "<title>NBA Display Setup</title>"
+                      "<title>NBA Display Wi-Fi Setup</title>"
                       "<style>"
                       "body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,sans-serif;background:#0d1117;color:#e6edf3;padding:16px;margin:0;}"
-                      ".card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px;max-width:400px;margin:12px auto;}"
+                      ".card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:18px;max-width:420px;margin:12px auto;}"
                       "h2{color:#fdb927;margin-top:0;font-size:22px;text-align:center;}"
-                      "label{display:block;font-size:13px;color:#8b949e;margin-top:12px;margin-bottom:4px;}"
-                      "input,select{width:100%;padding:10px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#fff;box-sizing:border-box;font-size:15px;}"
-                      "input:focus,select:focus{border-color:#1d428a;outline:none;}"
-                      ".btn{display:block;width:100%;background:#1d428a;color:#fff;border:none;padding:12px;border-radius:6px;font-size:16px;font-weight:bold;margin-top:18px;cursor:pointer;}"
+                      "label{display:block;font-size:13px;font-weight:600;color:#8b949e;margin-top:14px;margin-bottom:6px;}"
+                      "select,input{width:100%;padding:11px 12px;border-radius:6px;border:1px solid #30363d;background:#0d1117;color:#fff;box-sizing:border-box;font-size:15px;}"
+                      "select:focus,input:focus{border-color:#fdb927;outline:none;}"
+                      ".btn{display:block;width:100%;background:#1d428a;color:#fff;border:none;padding:13px;border-radius:6px;font-size:16px;font-weight:bold;margin-top:20px;cursor:pointer;}"
                       ".btn:hover{background:#2a5ab8;}"
-                      ".net-item{background:#21262d;padding:8px 12px;border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;}"
-                      ".net-item:hover{background:#30363d;}"
+                      ".rescan-btn{display:inline-block;background:#21262d;color:#58a6ff;text-decoration:none;font-size:13px;padding:6px 12px;border-radius:6px;border:1px solid #30363d;margin-bottom:10px;float:right;}"
+                      ".net-item{background:#21262d;padding:9px 12px;border-radius:6px;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;}"
                       ".del-btn{color:#f85149;text-decoration:none;font-size:13px;padding:4px 8px;border:1px solid #f85149;border-radius:4px;}"
+                      ".note{font-size:13px;color:#8b949e;text-align:center;margin-top:4px;margin-bottom:16px;}"
                       "</style>"
                       "<script>"
-                      "function pick(s){document.getElementById('ssid').value=s;document.getElementById('pass').focus();}"
+                      "function onSelectChange(){"
+                      "  var sel = document.getElementById('ssid_select');"
+                      "  var box = document.getElementById('custom_box');"
+                      "  if(sel.value === '__other__'){"
+                      "    box.style.display = 'block';"
+                      "    document.getElementById('custom_ssid').focus();"
+                      "  } else {"
+                      "    box.style.display = 'none';"
+                      "    document.getElementById('pass').focus();"
+                      "  }"
+                      "}"
                       "</script></head><body>"
                       "<div class='card'>"
-                      "<h2>🏀 NBA Display Setup</h2>"
-                      "<p style='font-size:13px;color:#8b949e;text-align:center;'>Configure Wi-Fi and Favorite Team</p>"
+                      "<h2>🏀 NBA Display Wi-Fi Setup</h2>"
+                      "<p class='note'>เลือกเครือข่าย Wi-Fi ใกล้เคียงเพื่อเชื่อมต่อ</p>"
+                      "<a href='/rescan' class='rescan-btn'>🔄 สแกนใหม่ (Rescan)</a>"
+                      "<div style='clear:both;'></div>"
                       "<form action='/save' method='POST'>"
-                      "<label>Wi-Fi Network (SSID):</label>"
-                      "<input type='text' id='ssid' name='ssid' placeholder='Select below or enter name' required>"
-                      "<label>Wi-Fi Password:</label>"
-                      "<input type='password' id='pass' name='pass' placeholder='Enter password'>"
-                      "<label>Favorite Team:</label>"
-                      "<select name='fav'>"
-                      "<option value='GS'" + String(favoriteTeam == "GS" || favoriteTeam == "GSW" ? " selected" : "") + ">Golden State Warriors (GSW)</option>"
-                      "<option value='LAL'" + String(favoriteTeam == "LAL" ? " selected" : "") + ">Los Angeles Lakers (LAL)</option>"
-                      "<option value='BOS'" + String(favoriteTeam == "BOS" ? " selected" : "") + ">Boston Celtics (BOS)</option>"
-                      "<option value='MIL'" + String(favoriteTeam == "MIL" ? " selected" : "") + ">Milwaukee Bucks (MIL)</option>"
-                      "<option value='DEN'" + String(favoriteTeam == "DEN" ? " selected" : "") + ">Denver Nuggets (DEN)</option>"
-                      "<option value='DAL'" + String(favoriteTeam == "DAL" ? " selected" : "") + ">Dallas Mavericks (DAL)</option>"
-                      "<option value='MIA'" + String(favoriteTeam == "MIA" ? " selected" : "") + ">Miami Heat (MIA)</option>"
-                      "<option value='NY'" + String(favoriteTeam == "NY" ? " selected" : "") + ">New York Knicks (NY)</option>"
-                      "<option value='PHX'" + String(favoriteTeam == "PHX" ? " selected" : "") + ">Phoenix Suns (PHX)</option>"
-                      "<option value='CHI'" + String(favoriteTeam == "CHI" ? " selected" : "") + ">Chicago Bulls (CHI)</option>"
-                      "<option value='MIN'" + String(favoriteTeam == "MIN" ? " selected" : "") + ">Minnesota Timberwolves (MIN)</option>"
-                      "<option value='OKC'" + String(favoriteTeam == "OKC" ? " selected" : "") + ">Oklahoma City Thunder (OKC)</option>"
-                      "<option value='SAC'" + String(favoriteTeam == "SAC" ? " selected" : "") + ">Sacramento Kings (SAC)</option>"
-                      "<option value='LAC'" + String(favoriteTeam == "LAC" ? " selected" : "") + ">LA Clippers (LAC)</option>"
-                      "<option value='PHI'" + String(favoriteTeam == "PHI" ? " selected" : "") + ">Philadelphia 76ers (PHI)</option>"
-                      "<option value='CLE'" + String(favoriteTeam == "CLE" ? " selected" : "") + ">Cleveland Cavaliers (CLE)</option>"
-                      "<option value='IND'" + String(favoriteTeam == "IND" ? " selected" : "") + ">Indiana Pacers (IND)</option>"
-                      "<option value='ORL'" + String(favoriteTeam == "ORL" ? " selected" : "") + ">Orlando Magic (ORL)</option>"
-                      "<option value='MEM'" + String(favoriteTeam == "MEM" ? " selected" : "") + ">Memphis Grizzlies (MEM)</option>"
-                      "<option value='HOU'" + String(favoriteTeam == "HOU" ? " selected" : "") + ">Houston Rockets (HOU)</option>"
-                      "<option value='SA'" + String(favoriteTeam == "SA" ? " selected" : "") + ">San Antonio Spurs (SA)</option>"
-                      "<option value='POR'" + String(favoriteTeam == "POR" ? " selected" : "") + ">Portland Trail Blazers (POR)</option>"
-                      "<option value='UTAH'" + String(favoriteTeam == "UTAH" ? " selected" : "") + ">Utah Jazz (UTAH)</option>"
-                      "<option value='ATL'" + String(favoriteTeam == "ATL" ? " selected" : "") + ">Atlanta Hawks (ATL)</option>"
-                      "<option value='TOR'" + String(favoriteTeam == "TOR" ? " selected" : "") + ">Toronto Raptors (TOR)</option>"
-                      "<option value='BKN'" + String(favoriteTeam == "BKN" ? " selected" : "") + ">Brooklyn Nets (BKN)</option>"
-                      "<option value='NO'" + String(favoriteTeam == "NO" ? " selected" : "") + ">New Orleans Pelicans (NO)</option>"
-                      "<option value='CHA'" + String(favoriteTeam == "CHA" ? " selected" : "") + ">Charlotte Hornets (CHA)</option>"
-                      "<option value='DET'" + String(favoriteTeam == "DET" ? " selected" : "") + ">Detroit Pistons (DET)</option>"
-                      "<option value='WSH'" + String(favoriteTeam == "WSH" ? " selected" : "") + ">Washington Wizards (WSH)</option>"
-                      "</select>"
-                      "<button type='submit' class='btn'>Save & Connect</button>"
-                      "</form></div>";
+                      "<label for='ssid_select'>📡 เลือก Wi-Fi ที่อยู่ใกล้เคียง (Select Wi-Fi):</label>"
+                      "<select id='ssid_select' name='ssid_select' onchange='onSelectChange()' required>";
 
-        // Detected Wi-Fi networks
-        html += "<div class='card'><h3 style='margin-top:0;font-size:16px;'>Detected Networks:</h3>";
-        int scanCount = WiFi.scanComplete();
-        if (scanCount > 0) {
-            for (int i = 0; i < scanCount; i++) {
-                String s = WiFi.SSID(i);
-                int r = WiFi.RSSI(i);
-                html += "<div class='net-item' onclick=\"pick('" + s + "')\"><span>" + s + "</span><span style='font-size:12px;color:#8b949e;'>" + String(r) + " dBm</span></div>";
-            }
+        if (apList.empty()) {
+            html += "<option value='__other__'>-- ไม่พบเครือข่าย (พิมพ์ชื่อเอง) --</option>";
         } else {
-            html += "<p style='color:#8b949e;font-size:13px;'>Scanning... refresh page in a few seconds.</p>";
+            for (const auto& ap : apList) {
+                int quality = min(max(2 * (ap.rssi + 100), 0), 100);
+                String sigText = (quality >= 75) ? "📶 แรง" : (quality >= 50 ? "📶 ปานกลาง" : "📶 อ่อน");
+                String lock = ap.isEncrypted ? "🔒" : "🔓";
+                html += "<option value='" + ap.ssid + "'>" + ap.ssid + " (" + sigText + " " + String(quality) + "% • " + lock + ")</option>";
+            }
+            html += "<option value='__other__'>✏️ พิมพ์ชื่ออื่น / Wi-Fi ที่ซ่อนอยู่ (Enter other SSID)...</option>";
         }
-        html += "</div>";
 
-        // Stored Networks
-        html += "<div class='card'><h3 style='margin-top:0;font-size:16px;'>Remembered Networks:</h3>";
+        html += "</select>"
+                "<div id='custom_box' style='display:" + String(apList.empty() ? "block" : "none") + ";'>"
+                "<label for='custom_ssid'>ชื่อ Wi-Fi (SSID):</label>"
+                "<input type='text' id='custom_ssid' name='custom_ssid' placeholder='ระบุชื่อ Wi-Fi'>"
+                "</div>"
+                "<label for='pass'>🔑 รหัสผ่าน Wi-Fi (Password):</label>"
+                "<input type='password' id='pass' name='pass' placeholder='ใส่รหัสผ่าน Wi-Fi (เว้นว่างได้ถ้าไม่มีรหัส)'>"
+                "<label for='fav'>⭐ ทีมโปรด (Favorite Team):</label>"
+                "<select id='fav' name='fav'>"
+                "<option value='GS'" + String(favoriteTeam == "GS" || favoriteTeam == "GSW" ? " selected" : "") + ">Golden State Warriors (GSW)</option>"
+                "<option value='LAL'" + String(favoriteTeam == "LAL" ? " selected" : "") + ">Los Angeles Lakers (LAL)</option>"
+                "<option value='BOS'" + String(favoriteTeam == "BOS" ? " selected" : "") + ">Boston Celtics (BOS)</option>"
+                "<option value='MIL'" + String(favoriteTeam == "MIL" ? " selected" : "") + ">Milwaukee Bucks (MIL)</option>"
+                "<option value='DEN'" + String(favoriteTeam == "DEN" ? " selected" : "") + ">Denver Nuggets (DEN)</option>"
+                "<option value='DAL'" + String(favoriteTeam == "DAL" ? " selected" : "") + ">Dallas Mavericks (DAL)</option>"
+                "<option value='MIA'" + String(favoriteTeam == "MIA" ? " selected" : "") + ">Miami Heat (MIA)</option>"
+                "<option value='NY'" + String(favoriteTeam == "NY" ? " selected" : "") + ">New York Knicks (NY)</option>"
+                "<option value='PHX'" + String(favoriteTeam == "PHX" ? " selected" : "") + ">Phoenix Suns (PHX)</option>"
+                "<option value='CHI'" + String(favoriteTeam == "CHI" ? " selected" : "") + ">Chicago Bulls (CHI)</option>"
+                "<option value='MIN'" + String(favoriteTeam == "MIN" ? " selected" : "") + ">Minnesota Timberwolves (MIN)</option>"
+                "<option value='OKC'" + String(favoriteTeam == "OKC" ? " selected" : "") + ">Oklahoma City Thunder (OKC)</option>"
+                "<option value='SAC'" + String(favoriteTeam == "SAC" ? " selected" : "") + ">Sacramento Kings (SAC)</option>"
+                "<option value='LAC'" + String(favoriteTeam == "LAC" ? " selected" : "") + ">LA Clippers (LAC)</option>"
+                "<option value='PHI'" + String(favoriteTeam == "PHI" ? " selected" : "") + ">Philadelphia 76ers (PHI)</option>"
+                "<option value='CLE'" + String(favoriteTeam == "CLE" ? " selected" : "") + ">Cleveland Cavaliers (CLE)</option>"
+                "<option value='IND'" + String(favoriteTeam == "IND" ? " selected" : "") + ">Indiana Pacers (IND)</option>"
+                "<option value='ORL'" + String(favoriteTeam == "ORL" ? " selected" : "") + ">Orlando Magic (ORL)</option>"
+                "<option value='MEM'" + String(favoriteTeam == "MEM" ? " selected" : "") + ">Memphis Grizzlies (MEM)</option>"
+                "<option value='HOU'" + String(favoriteTeam == "HOU" ? " selected" : "") + ">Houston Rockets (HOU)</option>"
+                "<option value='SA'" + String(favoriteTeam == "SA" ? " selected" : "") + ">San Antonio Spurs (SA)</option>"
+                "<option value='POR'" + String(favoriteTeam == "POR" ? " selected" : "") + ">Portland Trail Blazers (POR)</option>"
+                "<option value='UTAH'" + String(favoriteTeam == "UTAH" ? " selected" : "") + ">Utah Jazz (UTAH)</option>"
+                "<option value='ATL'" + String(favoriteTeam == "ATL" ? " selected" : "") + ">Atlanta Hawks (ATL)</option>"
+                "<option value='TOR'" + String(favoriteTeam == "TOR" ? " selected" : "") + ">Toronto Raptors (TOR)</option>"
+                "<option value='BKN'" + String(favoriteTeam == "BKN" ? " selected" : "") + ">Brooklyn Nets (BKN)</option>"
+                "<option value='NO'" + String(favoriteTeam == "NO" ? " selected" : "") + ">New Orleans Pelicans (NO)</option>"
+                "<option value='CHA'" + String(favoriteTeam == "CHA" ? " selected" : "") + ">Charlotte Hornets (CHA)</option>"
+                "<option value='DET'" + String(favoriteTeam == "DET" ? " selected" : "") + ">Detroit Pistons (DET)</option>"
+                "<option value='WSH'" + String(favoriteTeam == "WSH" ? " selected" : "") + ">Washington Wizards (WSH)</option>"
+                "</select>"
+                "<button type='submit' class='btn'>บันทึกและเชื่อมต่อ (Connect)</button>"
+                "</form></div>";
+
+        // Remembered Networks List
+        html += "<div class='card'><h3 style='margin-top:0;font-size:16px;color:#fdb927;'>เครือข่ายที่บันทึกไว้ (Remembered Networks):</h3>";
         if (savedNetworks.empty()) {
-            html += "<p style='color:#8b949e;font-size:13px;'>No networks saved yet.</p>";
+            html += "<p style='color:#8b949e;font-size:13px;'>ยังไม่มีเครือข่ายที่บันทึกไว้</p>";
         } else {
             for (size_t i = 0; i < savedNetworks.size(); i++) {
-                html += "<div class='net-item'><span>" + savedNetworks[i].ssid + "</span>"
-                        "<a href='/delete?id=" + String(i) + "' class='del-btn'>Remove</a></div>";
+                html += "<div class='net-item'><span>📶 <b>" + savedNetworks[i].ssid + "</b></span>"
+                        "<a href='/delete?id=" + String(i) + "' class='del-btn'>ลบ (Remove)</a></div>";
             }
         }
         html += "</div></body></html>";
@@ -306,12 +361,15 @@ private:
     }
 
     void handleSave() {
-        String newSsid = server.arg("ssid");
+        String chosenSsid = server.arg("ssid_select");
+        if (chosenSsid == "__other__") {
+            chosenSsid = server.arg("custom_ssid");
+        }
         String newPass = server.arg("pass");
         String newFav = server.arg("fav");
 
-        if (newSsid.length() > 0) {
-            addNetwork(newSsid, newPass);
+        if (chosenSsid.length() > 0) {
+            addNetwork(chosenSsid, newPass);
         }
         if (newFav.length() > 0) {
             setFavoriteTeam(newFav);
@@ -320,9 +378,9 @@ private:
         String resp = "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
                       "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
                       "<style>body{background:#0d1117;color:#fff;text-align:center;padding:40px;font-family:sans-serif;}</style></head><body>"
-                      "<h2>Saved Successfully!</h2>"
-                      "<p>Connecting to <b>" + newSsid + "</b>...</p>"
-                      "<p>The display is restarting now.</p>"
+                      "<h2 style='color:#fdb927;'>บันทึกเรียบร้อยแล้ว!</h2>"
+                      "<p>กำลังเชื่อมต่อกับ <b>" + chosenSsid + "</b>...</p>"
+                      "<p style='color:#8b949e;'>หน้าจอบอร์ดกำลังรีสตาร์ทเพื่อเริ่มทำงาน</p>"
                       "</body></html>";
         server.send(200, "text/html", resp);
 
