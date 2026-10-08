@@ -1,0 +1,491 @@
+#pragma once
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClient.h>
+#include <ArduinoJson.h>
+#include <vector>
+#include <time.h>
+#include "config.h"
+
+// Custom Stream that decodes HTTP chunks directly into PSRAM (or heap)
+class PsramStream : public Stream {
+public:
+    char* buffer = nullptr;
+    size_t capacity = 0;
+    size_t length = 0;
+    size_t readPos = 0;
+
+    PsramStream(size_t cap = 262144) {
+        capacity = cap;
+        if (psramFound()) {
+            buffer = (char*)ps_malloc(capacity);
+        }
+        if (!buffer) {
+            buffer = (char*)malloc(capacity);
+        }
+        if (buffer) {
+            buffer[0] = '\0';
+        }
+    }
+
+    ~PsramStream() {
+        if (buffer) {
+            free(buffer);
+            buffer = nullptr;
+        }
+    }
+
+    size_t write(uint8_t b) override {
+        if (buffer && length < capacity - 1) {
+            buffer[length++] = (char)b;
+            buffer[length] = '\0';
+            return 1;
+        }
+        return 0;
+    }
+
+    size_t write(const uint8_t* data, size_t size) override {
+        if (!buffer) return 0;
+        size_t toWrite = min(size, capacity - 1 - length);
+        if (toWrite > 0) {
+            memcpy(buffer + length, data, toWrite);
+            length += toWrite;
+            buffer[length] = '\0';
+        }
+        return toWrite;
+    }
+
+    int available() override { return (length > readPos) ? (length - readPos) : 0; }
+    int read() override { return available() ? buffer[readPos++] : -1; }
+    int peek() override { return available() ? buffer[readPos] : -1; }
+    void flush() override {}
+};
+
+struct TeamInfo {
+    String abbreviation;
+    String displayName;
+    String score;
+    String record;
+};
+
+struct GameData {
+    String id;
+    TeamInfo away;
+    TeamInfo home;
+    String statusDetail; // e.g. "Final", "Halftime", "9:20 - 2nd", "7:00 PM"
+    String state;        // "pre", "in", "post"
+    bool isFavorite;
+    bool isValid;
+};
+
+struct StandingEntry {
+    int rank;
+    String abbreviation;
+    String displayName;
+    String record;
+    String gb;
+    bool isFavorite;
+};
+
+struct ConferenceStandings {
+    String name;
+    std::vector<StandingEntry> entries;
+};
+
+class NBAClient {
+public:
+    std::vector<GameData> allGames;
+    GameData favoriteGame;
+    GameData lastGame;
+    GameData nextGame;
+    time_t nextGameEpoch = 0;
+    String nextGameFormatted = "";
+
+    std::vector<ConferenceStandings> conferences;
+    int favoriteRank = 0;
+    String favoriteConference = "West";
+    String favTeamOverride = "";
+
+    unsigned long lastFetchTime = 0;
+    unsigned long lastStandingsFetch = 0;
+    String lastStatusMsg = "Init";
+
+    NBAClient() {
+        favoriteGame.isValid = false;
+        lastGame.isValid = false;
+        nextGame.isValid = false;
+    }
+
+    void setFavoriteTeam(const String& team) {
+        favTeamOverride = team;
+    }
+
+    bool isFavoriteTeam(const String& abbr) {
+        String fav = (favTeamOverride.length() > 0) ? favTeamOverride : FAVORITE_TEAM;
+        fav.toUpperCase();
+        String a = abbr;
+        a.toUpperCase();
+
+        if (a == fav) return true;
+        if ((fav == "GS" || fav == "GSW") && (a == "GS" || a == "GSW")) return true;
+        return false;
+    }
+
+    bool updateData(bool forceStandings = false) {
+        if (WiFi.status() != WL_CONNECTED) {
+            lastStatusMsg = "WiFi not connected";
+            return false;
+        }
+
+        lastStatusMsg = "Fetching...";
+        bool ok = fetchScoreboard();
+
+        // Fetch team schedule to get next game countdown and last game recap
+        fetchFavoriteSchedule();
+
+        // Fetch standings if forced, empty, or 15 mins passed
+        if (forceStandings || conferences.empty() || (millis() - lastStandingsFetch > 15 * 60 * 1000)) {
+            fetchStandings();
+        }
+
+        if (ok || favoriteGame.isValid || lastGame.isValid) {
+            lastFetchTime = millis();
+            lastStatusMsg = "Updated (" + String(allGames.size()) + " games)";
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    bool hasLiveGame() {
+        if (favoriteGame.isValid && favoriteGame.state == "in") return true;
+        for (const auto& g : allGames) {
+            if (g.state == "in") return true;
+        }
+        return false;
+    }
+
+    String getCountdownString() {
+        if (nextGameEpoch == 0) return "TBD";
+        time_t now = time(nullptr);
+        if (now < 100000) return nextGameFormatted; // NTP not synced yet
+
+        if (nextGameEpoch > now) {
+            long diff = nextGameEpoch - now;
+            int days = diff / 86400;
+            int hours = (diff % 86400) / 3600;
+            int mins = (diff % 3600) / 60;
+
+            if (days > 0) {
+                return "In " + String(days) + "d " + String(hours) + "h";
+            } else if (hours > 0) {
+                return "In " + String(hours) + "h " + String(mins) + "m";
+            } else {
+                return "In " + String(mins) + "m";
+            }
+        }
+        return "Upcoming";
+    }
+
+private:
+    time_t parseIso8601(const String& isoStr) {
+        int y, m, d, hr, mn;
+        if (sscanf(isoStr.c_str(), "%d-%d-%dT%d:%d", &y, &m, &d, &hr, &mn) == 5) {
+            int a = (14 - m) / 12;
+            int yr = y + 4800 - a;
+            int mo = m + 12 * a - 3;
+            long jdn = d + (153 * mo + 2) / 5 + 365L * yr + yr / 4 - yr / 100 + yr / 400 - 32045;
+            long daysSince1970 = jdn - 2440588;
+            return (time_t)(daysSince1970 * 86400L + hr * 3600L + mn * 60L);
+        }
+        return 0;
+    }
+
+    String formatLocalMatchDate(time_t utcEpoch, int tzOffsetHours) {
+        if (utcEpoch == 0) return "";
+        time_t localEpoch = utcEpoch + (tzOffsetHours * 3600);
+        struct tm* tmLocal = gmtime(&localEpoch);
+        if (!tmLocal) return "";
+        char buf[32];
+        strftime(buf, sizeof(buf), "%a %d %b, %H:%M", tmLocal);
+        return String(buf);
+    }
+
+    bool fetchScoreboard() {
+        WiFiClient client;
+        HTTPClient http;
+        http.setTimeout(12000);
+        
+        String url = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard";
+        http.begin(client, url);
+
+        int httpCode = http.GET();
+        if (httpCode != HTTP_CODE_OK) {
+            lastStatusMsg = "HTTP Err " + String(httpCode);
+            http.end();
+            return false;
+        }
+
+        PsramStream psramStream(131072);
+        if (!psramStream.buffer) {
+            lastStatusMsg = "PSRAM Alloc Fail";
+            http.end();
+            return false;
+        }
+
+        int written = http.writeToStream(&psramStream);
+        http.end();
+
+        if (written <= 0 || psramStream.length == 0) {
+            lastStatusMsg = "Empty response (" + String(written) + ")";
+            return false;
+        }
+
+        // Set up filter for ArduinoJson 7
+        JsonDocument filter;
+        filter["events"][0]["id"] = true;
+        filter["events"][0]["status"]["type"]["state"] = true;
+        filter["events"][0]["status"]["type"]["shortDetail"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["score"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["homeAway"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["records"][0]["summary"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(
+            doc, 
+            psramStream.buffer, 
+            DeserializationOption::Filter(filter),
+            DeserializationOption::NestingLimit(25)
+        );
+
+        if (error) {
+            lastStatusMsg = "JSON: " + String(error.c_str());
+            return false;
+        }
+
+        allGames.clear();
+        favoriteGame.isValid = false;
+
+        JsonArray events = doc["events"].as<JsonArray>();
+        for (JsonObject ev : events) {
+            GameData game;
+            game.id = ev["id"].as<String>();
+            game.state = ev["status"]["type"]["state"].as<String>();
+            game.statusDetail = ev["status"]["type"]["shortDetail"].as<String>();
+            game.isValid = true;
+            game.isFavorite = false;
+
+            JsonArray competitors = ev["competitions"][0]["competitors"].as<JsonArray>();
+            for (JsonObject c : competitors) {
+                String homeAway = c["homeAway"].as<String>();
+                TeamInfo t;
+                t.abbreviation = c["team"]["abbreviation"].as<String>();
+                t.displayName = c["team"]["shortDisplayName"].as<String>();
+                t.score = !c["score"].isNull() ? c["score"].as<String>() : "0";
+                t.record = !c["records"][0]["summary"].isNull() ? c["records"][0]["summary"].as<String>() : "";
+
+                if (isFavoriteTeam(t.abbreviation)) {
+                    game.isFavorite = true;
+                }
+
+                if (homeAway == "home") {
+                    game.home = t;
+                } else {
+                    game.away = t;
+                }
+            }
+
+            allGames.push_back(game);
+
+            if (game.isFavorite) {
+                favoriteGame = game;
+                if (game.state == "post") {
+                    lastGame = game;
+                }
+            }
+        }
+
+        return (allGames.size() > 0);
+    }
+
+    bool fetchFavoriteSchedule() {
+        WiFiClient client;
+        HTTPClient http;
+        http.setTimeout(12000);
+        String url = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/gs/schedule";
+        http.begin(client, url);
+
+        int httpCode = http.GET();
+        if (httpCode != HTTP_CODE_OK) {
+            http.end();
+            return false;
+        }
+
+        PsramStream psramStream(131072);
+        if (!psramStream.buffer) {
+            http.end();
+            return false;
+        }
+
+        int written = http.writeToStream(&psramStream);
+        http.end();
+
+        if (written <= 0 || psramStream.length == 0) return false;
+
+        JsonDocument filter;
+        filter["events"][0]["id"] = true;
+        filter["events"][0]["name"] = true;
+        filter["events"][0]["date"] = true;
+        filter["events"][0]["competitions"][0]["status"]["type"]["state"] = true;
+        filter["events"][0]["competitions"][0]["status"]["type"]["shortDetail"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["homeAway"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["score"]["displayValue"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
+        filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(
+            doc, 
+            psramStream.buffer, 
+            DeserializationOption::Filter(filter),
+            DeserializationOption::NestingLimit(25)
+        );
+
+        if (error) {
+            return false;
+        }
+
+        JsonArray events = doc["events"].as<JsonArray>();
+        if (events.isNull() || events.size() == 0) return false;
+
+        bool foundNext = false;
+        for (JsonObject ev : events) {
+            String state = ev["competitions"][0]["status"]["type"]["state"].as<String>();
+
+            GameData game;
+            game.id = ev["id"].as<String>();
+            game.state = state;
+            game.statusDetail = ev["competitions"][0]["status"]["type"]["shortDetail"].as<String>();
+            game.isFavorite = true;
+            game.isValid = true;
+
+            JsonArray competitors = ev["competitions"][0]["competitors"].as<JsonArray>();
+            for (JsonObject c : competitors) {
+                String homeAway = c["homeAway"].as<String>();
+                TeamInfo t;
+                t.abbreviation = c["team"]["abbreviation"].as<String>();
+                t.displayName = c["team"]["shortDisplayName"].as<String>();
+                t.score = !c["score"]["displayValue"].isNull() ? c["score"]["displayValue"].as<String>() : "-";
+
+                if (homeAway == "home") {
+                    game.home = t;
+                } else {
+                    game.away = t;
+                }
+            }
+
+            if (state == "in") {
+                favoriteGame = game;
+            } else if (state == "post") {
+                lastGame = game;
+            } else if (state == "pre" && !foundNext) {
+                nextGame = game;
+                String isoDate = ev["date"].as<String>();
+                nextGameEpoch = parseIso8601(isoDate);
+                nextGameFormatted = formatLocalMatchDate(nextGameEpoch, TIMEZONE_OFFSET_HOURS);
+                foundNext = true;
+            }
+        }
+
+        if (!favoriteGame.isValid) {
+            if (lastGame.isValid) favoriteGame = lastGame;
+            else if (nextGame.isValid) favoriteGame = nextGame;
+        }
+
+        return true;
+    }
+
+    bool fetchStandings() {
+        WiFiClient client;
+        HTTPClient http;
+        http.setTimeout(15000);
+        String url = "http://site.api.espn.com/apis/v2/sports/basketball/nba/standings";
+        http.begin(client, url);
+
+        int httpCode = http.GET();
+        if (httpCode != HTTP_CODE_OK) {
+            http.end();
+            return false;
+        }
+
+        PsramStream psramStream(262144);
+        if (!psramStream.buffer) {
+            http.end();
+            return false;
+        }
+
+        int written = http.writeToStream(&psramStream);
+        http.end();
+
+        if (written <= 0 || psramStream.length == 0) return false;
+
+        JsonDocument filter;
+        filter["children"][0]["name"] = true;
+        filter["children"][0]["standings"]["entries"][0]["team"]["abbreviation"] = true;
+        filter["children"][0]["standings"]["entries"][0]["team"]["shortDisplayName"] = true;
+        filter["children"][0]["standings"]["entries"][0]["stats"][0]["name"] = true;
+        filter["children"][0]["standings"]["entries"][0]["stats"][0]["displayValue"] = true;
+
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(
+            doc, 
+            psramStream.buffer, 
+            DeserializationOption::Filter(filter),
+            DeserializationOption::NestingLimit(25)
+        );
+
+        if (error) {
+            return false;
+        }
+
+        conferences.clear();
+        JsonArray children = doc["children"].as<JsonArray>();
+        for (JsonObject conf : children) {
+            ConferenceStandings cs;
+            cs.name = conf["name"].as<String>();
+
+            int rank = 1;
+            JsonArray entries = conf["standings"]["entries"].as<JsonArray>();
+            for (JsonObject entry : entries) {
+                StandingEntry se;
+                se.rank = rank++;
+                se.abbreviation = entry["team"]["abbreviation"].as<String>();
+                se.displayName = entry["team"]["shortDisplayName"].as<String>();
+                se.isFavorite = isFavoriteTeam(se.abbreviation);
+
+                JsonArray stats = entry["stats"].as<JsonArray>();
+                for (JsonObject stat : stats) {
+                    String sname = stat["name"].as<String>();
+                    if (sname == "overall") se.record = stat["displayValue"].as<String>();
+                    else if (sname == "gamesBehind") se.gb = stat["displayValue"].as<String>();
+                }
+
+                if (se.isFavorite) {
+                    favoriteRank = se.rank;
+                    favoriteConference = (cs.name.indexOf("West") >= 0) ? "West" : "East";
+                }
+
+                cs.entries.push_back(se);
+            }
+
+            conferences.push_back(cs);
+        }
+
+        lastStandingsFetch = millis();
+        return true;
+    }
+};
