@@ -3,8 +3,8 @@
 // ==========================================
 // WiFi Settings
 // ==========================================
-#define WIFI_SSID       "jib_2.4G"
-#define WIFI_PASSWORD   "jib251830"
+#define WIFI_SSID       "Your_WiFi_Name"
+#define WIFI_PASSWORD   "Your_WiFi_Password"
 
 // ==========================================
 // Timezone Settings
