@@ -159,8 +159,12 @@ public:
         }
     }
 
+    bool hasFavoriteLiveGame() {
+        return (favoriteGame.isValid && favoriteGame.state == "in");
+    }
+
     bool hasLiveGame() {
-        if (favoriteGame.isValid && favoriteGame.state == "in") return true;
+        if (hasFavoriteLiveGame()) return true;
         for (const auto& g : allGames) {
             if (g.state == "in") return true;
         }

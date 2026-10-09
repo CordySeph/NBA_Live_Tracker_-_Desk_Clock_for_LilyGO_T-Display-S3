@@ -19,6 +19,7 @@ int currentMode = 0;
 int allGamesPageIndex = 0;
 int standingsConfIndex = 0;
 int standingsPageIndex = 0;
+bool userNavigatedManually = false;
 
 // Button debouncing
 int lastBtn1State = HIGH;
@@ -104,8 +105,9 @@ void setup() {
         // Fetch scores & standings
         nba.updateData(true);
 
-        // If game is live right now, start on GSW Spotlight; otherwise start on Standby Clock
-        if (nba.hasLiveGame()) {
+        // If favorite team is playing live right now, show Live Match (Mode 1);
+        // otherwise always default to Standby Desk Clock & Upcoming Match Countdown (Mode 0)
+        if (nba.hasFavoriteLiveGame()) {
             currentMode = 1;
         } else {
             currentMode = 0;
@@ -140,6 +142,8 @@ void loop() {
 
         if (reading2 == LOW) { // Button pressed
             Serial.println("BTN2 pressed: Next mode");
+            userNavigatedManually = true;
+
             if (currentMode == 0) {
                 // Clock -> GSW Match Detail
                 currentMode = 1;
@@ -170,12 +174,14 @@ void loop() {
                         standingsPageIndex = 0;
                         standingsConfIndex++;
                         if (standingsConfIndex >= (int)nba.conferences.size()) {
-                            // Standings done -> Back to Standby Clock
-                            currentMode = 0;
+                            // Standings done -> Back to Standby Clock (or Live if match active)
+                            currentMode = nba.hasFavoriteLiveGame() ? 1 : 0;
+                            userNavigatedManually = false;
                         }
                     }
                 } else {
-                    currentMode = 0;
+                    currentMode = nba.hasFavoriteLiveGame() ? 1 : 0;
+                    userNavigatedManually = false;
                 }
             }
             refreshDisplay();
@@ -225,7 +231,21 @@ void loop() {
 
         if (WiFi.status() == WL_CONNECTED) {
             Serial.println("Auto updating scores...");
+            bool wasFavLive = nba.hasFavoriteLiveGame();
             nba.updateData(false);
+            bool isFavLive = nba.hasFavoriteLiveGame();
+
+            // Auto-switch to Live Mode when favorite team game just started!
+            if (!wasFavLive && isFavLive && !userNavigatedManually) {
+                Serial.println("Favorite team is live! Auto-switching to Live Scoreboard.");
+                currentMode = 1;
+            } 
+            // Auto-return to Standby Clock when favorite team game ends
+            else if (wasFavLive && !isFavLive && !userNavigatedManually && currentMode == 1) {
+                Serial.println("Favorite game finished. Auto-returning to Standby Clock.");
+                currentMode = 0;
+            }
+
             refreshDisplay();
         }
     }
