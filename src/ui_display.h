@@ -161,25 +161,26 @@ public:
         // ----------------------------------------------------
         spr.setTextDatum(ML_DATUM);
         spr.setTextColor(C_GSW_GOLD, C_BG);
-        spr.drawString("DUBNATION", 12, 16, 2);
+        spr.drawString("DUBNATION", 10, 16, 2);
 
-        // Huge Hour:Minute
+        // Huge Hour:Minute (Font 7, width 140px, completely unobstructed)
         spr.setTextDatum(TL_DATUM);
         spr.setTextColor(C_WHITE, C_BG);
-        spr.drawString(timeHM, 10, 32, 7);
+        spr.drawString(timeHM, 6, 32, 7);
 
-        // Small Seconds
-        spr.setTextColor(C_GSW_GOLD, C_BG);
-        spr.drawString(timeSec, 116, 42, 4);
-
-        // Date String
+        // Date String (Left aligned)
         spr.setTextDatum(ML_DATUM);
         spr.setTextColor(C_LIGHT_GRAY, C_BG);
-        spr.drawString(dateStr, 12, 98, 2);
+        spr.drawString(dateStr, 8, 96, 2);
+
+        // Live Seconds Counter (Right aligned beside date in Gold, no overlap)
+        spr.setTextDatum(MR_DATUM);
+        spr.setTextColor(C_GSW_GOLD, C_BG);
+        spr.drawString(timeSec, 146, 96, 4);
 
         // Standings Badge (e.g. #5 WEST • 1-1)
-        spr.fillRoundRect(10, 115, 138, 26, 4, C_CARD_BG);
-        spr.drawRoundRect(10, 115, 138, 26, 4, C_GSW_BLUE);
+        spr.fillRoundRect(8, 115, 140, 26, 4, C_CARD_BG);
+        spr.drawRoundRect(8, 115, 140, 26, 4, C_GSW_BLUE);
 
         spr.setTextDatum(MC_DATUM);
         spr.setTextColor(C_GSW_GOLD, C_CARD_BG);
