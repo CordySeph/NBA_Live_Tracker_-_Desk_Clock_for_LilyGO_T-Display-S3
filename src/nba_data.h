@@ -124,17 +124,17 @@ public:
 
     void initMutex() {
         if (!mutex) {
-            mutex = xSemaphoreCreateMutex();
+            mutex = xSemaphoreCreateRecursiveMutex();
         }
     }
 
     bool lock(TickType_t timeout = portMAX_DELAY) {
-        if (mutex) return (xSemaphoreTake(mutex, timeout) == pdTRUE);
+        if (mutex) return (xSemaphoreTakeRecursive(mutex, timeout) == pdTRUE);
         return true;
     }
 
     void unlock() {
-        if (mutex) xSemaphoreGive(mutex);
+        if (mutex) xSemaphoreGiveRecursive(mutex);
     }
 
     void setFavoriteTeam(const String& team) {
