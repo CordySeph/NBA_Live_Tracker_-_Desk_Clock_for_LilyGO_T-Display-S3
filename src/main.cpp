@@ -141,6 +141,7 @@ void nbaBackgroundUpdateTask(void* pvParameters) {
 
 void setup() {
     Serial.begin(115200);
+    Serial.setTxTimeoutMs(0); // Non-blocking USB CDC when powered via battery/wall charger
     delay(100);
     Serial.println("\n--- LilyGO T-Display-S3 NBA Tracker ---");
 

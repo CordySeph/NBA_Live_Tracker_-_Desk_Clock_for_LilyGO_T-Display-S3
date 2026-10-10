@@ -207,7 +207,7 @@ public:
         }
 
         lock();
-        if (ok || favoriteGame.isValid || lastGame.isValid) {
+        if (ok) {
             lastFetchTime = millis();
             lastStatusMsg = "Updated (" + String(allGames.size()) + " games)";
             unlock();
@@ -240,12 +240,17 @@ public:
     }
 
     String getCountdownString() {
-        if (nextGameEpoch == 0) return "TBD";
-        time_t now = time(nullptr);
-        if (now < 100000) return nextGameFormatted; // NTP not synced yet
+        lock();
+        time_t targetEpoch = nextGameEpoch;
+        String fallbackFormatted = nextGameFormatted;
+        unlock();
 
-        if (nextGameEpoch > now) {
-            long diff = nextGameEpoch - now;
+        if (targetEpoch == 0) return "TBD";
+        time_t now = time(nullptr);
+        if (now < 100000) return fallbackFormatted; // NTP not synced yet
+
+        if (targetEpoch > now) {
+            long diff = targetEpoch - now;
             int days = diff / 86400;
             int hours = (diff % 86400) / 3600;
             int mins = (diff % 3600) / 60;

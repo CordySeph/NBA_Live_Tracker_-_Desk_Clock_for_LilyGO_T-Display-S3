@@ -18,7 +18,7 @@
 #define FAVORITE_TEAM   "GS"
 
 // Automatic data update intervals (in milliseconds)
-#define UPDATE_INTERVAL_NORMAL (30 * 1000)  // 30 seconds when idle / off-hours
+#define UPDATE_INTERVAL_NORMAL (60 * 1000)  // 60 seconds when idle / off-hours
 #define UPDATE_INTERVAL_LIVE   (15 * 1000)  // 15 seconds during live matches
 
 // ==========================================
