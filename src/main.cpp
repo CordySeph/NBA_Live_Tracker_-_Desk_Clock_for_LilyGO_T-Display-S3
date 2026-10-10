@@ -78,6 +78,7 @@ void refreshDisplay() {
 }
 
 void nbaBackgroundUpdateTask(void* pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(500)); // Allow setup and display init to complete cleanly
     Serial.println("Background NBA Task started on Core 0");
     unsigned long lastUpdateAttempt = 0;
     unsigned long lastWiFiReconnectAttempt = 0;
@@ -141,7 +142,6 @@ void nbaBackgroundUpdateTask(void* pvParameters) {
 
 void setup() {
     Serial.begin(115200);
-    Serial.setTxTimeoutMs(0); // Non-blocking USB CDC when powered via battery/wall charger
     delay(100);
     Serial.println("\n--- LilyGO T-Display-S3 NBA Tracker ---");
 
@@ -179,20 +179,17 @@ void setup() {
         // Sync real-time clock via NTP (Thailand UTC+7)
         configTime(TIMEZONE_OFFSET_HOURS * 3600, 0, "pool.ntp.org", "time.google.com");
 
-        // Initial fetch
-        nba.updateData(true);
-
-        if (nba.hasFavoriteLiveGame()) {
-            currentMode = 1;
-        } else {
-            currentMode = 0;
-        }
+        currentMode = 0; // Default to Standby Clock immediately
     } else {
         Serial.println("No saved Wi-Fi found. Starting Setup Portal...");
         wifiMgr.startPortal();
     }
 
-    // Start background network task on Core 0 (16KB stack)
+    // Switch display away from "Connecting to Wi-Fi..." immediately!
+    refreshDisplay();
+
+    // Start background network task on Core 0 to perform initial fetch and future updates
+    requestForceUpdate = true;
     xTaskCreatePinnedToCore(
         nbaBackgroundUpdateTask,
         "nba_update",
@@ -202,8 +199,6 @@ void setup() {
         &nbaTaskHandle,
         0
     );
-
-    refreshDisplay();
 }
 
 void loop() {

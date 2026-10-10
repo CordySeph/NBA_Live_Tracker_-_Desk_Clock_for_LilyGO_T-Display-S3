@@ -63,34 +63,6 @@ public:
     void flush() override {}
 };
 
-// Custom Allocator for ArduinoJson 7 to allocate DOM tree in PSRAM instead of scarce internal SRAM
-class PsramAllocator : public ArduinoJson::Allocator {
-public:
-    void* allocate(size_t size) override {
-        if (psramFound()) {
-            void* p = ps_malloc(size);
-            if (p) return p;
-        }
-        return malloc(size);
-    }
-
-    void deallocate(void* ptr) override {
-        free(ptr);
-    }
-
-    void* reallocate(void* ptr, size_t new_size) override {
-        if (psramFound()) {
-            void* p = ps_realloc(ptr, new_size);
-            if (p) return p;
-        }
-        return realloc(ptr, new_size);
-    }
-
-    static PsramAllocator* instance() {
-        static PsramAllocator alloc;
-        return &alloc;
-    }
-};
 
 struct TeamInfo {
     String abbreviation;
@@ -329,7 +301,7 @@ private:
         }
 
         // Set up filter for ArduinoJson 7 in PSRAM
-        JsonDocument filter(PsramAllocator::instance());
+        JsonDocument filter;
         filter["events"][0]["id"] = true;
         filter["events"][0]["status"]["type"]["state"] = true;
         filter["events"][0]["status"]["type"]["shortDetail"] = true;
@@ -339,7 +311,7 @@ private:
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
 
-        JsonDocument doc(PsramAllocator::instance());
+        JsonDocument doc;
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
@@ -444,7 +416,7 @@ private:
 
         if (written <= 0 || psramStream.length == 0) return false;
 
-        JsonDocument filter(PsramAllocator::instance());
+        JsonDocument filter;
         filter["events"][0]["id"] = true;
         filter["events"][0]["name"] = true;
         filter["events"][0]["date"] = true;
@@ -455,7 +427,7 @@ private:
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
 
-        JsonDocument doc(PsramAllocator::instance());
+        JsonDocument doc;
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
@@ -568,14 +540,14 @@ private:
 
         if (written <= 0 || psramStream.length == 0) return false;
 
-        JsonDocument filter(PsramAllocator::instance());
+        JsonDocument filter;
         filter["children"][0]["name"] = true;
         filter["children"][0]["standings"]["entries"][0]["team"]["abbreviation"] = true;
         filter["children"][0]["standings"]["entries"][0]["team"]["shortDisplayName"] = true;
         filter["children"][0]["standings"]["entries"][0]["stats"][0]["name"] = true;
         filter["children"][0]["standings"]["entries"][0]["stats"][0]["displayValue"] = true;
 
-        JsonDocument doc(PsramAllocator::instance());
+        JsonDocument doc;
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
