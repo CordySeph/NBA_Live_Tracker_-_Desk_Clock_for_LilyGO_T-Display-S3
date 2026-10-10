@@ -97,6 +97,7 @@ struct TeamInfo {
     String displayName;
     String score;
     String record;
+    bool isFavorite = false;
 };
 
 struct GameData {
@@ -218,15 +219,24 @@ public:
     }
 
     bool hasFavoriteLiveGame() {
-        return (favoriteGame.isValid && favoriteGame.state == "in");
+        lock();
+        bool live = (favoriteGame.isValid && favoriteGame.state == "in");
+        unlock();
+        return live;
     }
 
     bool hasLiveGame() {
         if (hasFavoriteLiveGame()) return true;
+        lock();
+        bool live = false;
         for (const auto& g : allGames) {
-            if (g.state == "in") return true;
+            if (g.state == "in") {
+                live = true;
+                break;
+            }
         }
-        return false;
+        unlock();
+        return live;
     }
 
     String getCountdownString() {
@@ -268,10 +278,10 @@ private:
     String formatLocalMatchDate(time_t utcEpoch, int tzOffsetHours) {
         if (utcEpoch == 0) return "";
         time_t localEpoch = utcEpoch + (tzOffsetHours * 3600);
-        struct tm* tmLocal = gmtime(&localEpoch);
-        if (!tmLocal) return "";
+        struct tm tmLocal;
+        if (!gmtime_r(&localEpoch, &tmLocal)) return "";
         char buf[32];
-        strftime(buf, sizeof(buf), "%a %d %b, %H:%M", tmLocal);
+        strftime(buf, sizeof(buf), "%a %d %b, %H:%M", &tmLocal);
         return String(buf);
     }
 
@@ -362,8 +372,9 @@ private:
                 t.displayName = c["team"]["shortDisplayName"].as<String>();
                 t.score = !c["score"].isNull() ? c["score"].as<String>() : "0";
                 t.record = !c["records"][0]["summary"].isNull() ? c["records"][0]["summary"].as<String>() : "";
+                t.isFavorite = isFavoriteTeam(t.abbreviation);
 
-                if (isFavoriteTeam(t.abbreviation)) {
+                if (t.isFavorite) {
                     game.isFavorite = true;
                 }
 
@@ -481,6 +492,7 @@ private:
                 t.abbreviation = c["team"]["abbreviation"].as<String>();
                 t.displayName = c["team"]["shortDisplayName"].as<String>();
                 t.score = !c["score"]["displayValue"].isNull() ? c["score"]["displayValue"].as<String>() : "-";
+                t.isFavorite = isFavoriteTeam(t.abbreviation);
 
                 if (homeAway == "home") {
                     game.home = t;

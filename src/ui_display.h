@@ -184,9 +184,10 @@ public:
 
         spr.setTextDatum(MC_DATUM);
         spr.setTextColor(C_GSW_GOLD, C_CARD_BG);
-        String rankStr = (nba.favoriteRank > 0) ? ("#" + String(nba.favoriteRank) + " " + nba.favoriteConference) : "WARRIORS";
+        String favAbbr = nba.favTeamOverride.length() > 0 ? nba.favTeamOverride : FAVORITE_TEAM;
+        String rankStr = (nba.favoriteRank > 0) ? ("#" + String(nba.favoriteRank) + " " + nba.favoriteConference) : favAbbr;
         if (nba.lastGame.isValid && nba.lastGame.away.record.length() > 0) {
-            rankStr += " • " + (nba.lastGame.away.abbreviation == "GS" ? nba.lastGame.away.record : nba.lastGame.home.record);
+            rankStr += " • " + (nba.isFavoriteTeam(nba.lastGame.away.abbreviation) ? nba.lastGame.away.record : nba.lastGame.home.record);
         }
         spr.drawString(rankStr, 79, 128, 2);
 
@@ -208,14 +209,14 @@ public:
         spr.setTextColor(C_WHITE, C_GSW_BLUE);
         spr.drawString(countdown, 271, 20, 2);
 
-        // Next Matchup: e.g. GSW vs SAC
+        // Next Matchup: e.g. GSW vs SAC or Off-season
         spr.setTextDatum(ML_DATUM);
         spr.setTextColor(C_WHITE, C_CARD_BG);
-        String matchup = "GSW vs SAC";
+        String matchup = "No upcoming match";
         if (nba.nextGame.isValid) {
             matchup = nba.nextGame.away.abbreviation + " @ " + nba.nextGame.home.abbreviation;
         }
-        spr.drawString(matchup, 164, 42, 4);
+        spr.drawString(matchup, 164, 42, (matchup.length() > 12 ? 2 : 4));
 
         // Match local date & time
         spr.setTextColor(C_LIGHT_GRAY, C_CARD_BG);
@@ -266,7 +267,10 @@ public:
 
         spr.setTextDatum(ML_DATUM);
         spr.setTextColor(C_GSW_GOLD, C_GSW_BLUE);
-        String headerTitle = "WARRIORS";
+        String favName = (game.home.isFavorite && game.home.displayName.length() > 0) ? game.home.displayName : 
+                         ((game.away.isFavorite && game.away.displayName.length() > 0) ? game.away.displayName : "SPOTLIGHT");
+        favName.toUpperCase();
+        String headerTitle = favName;
         if (favRank > 0) {
             headerTitle += " (#" + String(favRank) + " " + favConf + ")";
         }
@@ -287,7 +291,7 @@ public:
                 spr.drawString("Connecting to network...", 160, 110, 2);
             } else {
                 spr.setTextColor(C_WHITE, C_BG);
-                spr.drawString("No GSW match data found", 160, 60, 4);
+                spr.drawString("No match data found", 160, 60, 4);
                 spr.setTextColor(C_LIGHT_GRAY, C_BG);
                 spr.drawString("Status: " + statusMsg, 160, 90, 2);
                 spr.setTextColor(C_GSW_GOLD, C_BG);
@@ -295,12 +299,10 @@ public:
             }
         } else {
             // Away Team Card
-            bool awayIsFav = (game.away.abbreviation == "GS" || game.away.abbreviation == "GSW");
-            drawTeamCard(8, 28, 146, 112, game.away, awayIsFav);
+            drawTeamCard(8, 28, 146, 112, game.away, game.away.isFavorite);
 
             // Home Team Card
-            bool homeIsFav = (game.home.abbreviation == "GS" || game.home.abbreviation == "GSW");
-            drawTeamCard(166, 28, 146, 112, game.home, homeIsFav);
+            drawTeamCard(166, 28, 146, 112, game.home, game.home.isFavorite);
 
             // Center "@"
             spr.setTextDatum(MC_DATUM);

@@ -80,6 +80,7 @@ void refreshDisplay() {
 void nbaBackgroundUpdateTask(void* pvParameters) {
     Serial.println("Background NBA Task started on Core 0");
     unsigned long lastUpdateAttempt = 0;
+    unsigned long lastWiFiReconnectAttempt = 0;
 
     while (true) {
         if (wifiMgr.portalRunning) {
@@ -87,12 +88,23 @@ void nbaBackgroundUpdateTask(void* pvParameters) {
             continue;
         }
 
-        // Auto-reconnect if dropped
+        unsigned long now = millis();
+
+        // Auto-reconnect with 15s backoff if dropped (prevents aggressive radio scanning)
         if (WiFi.status() != WL_CONNECTED) {
-            wifiMgr.autoConnect();
+            if (now - lastWiFiReconnectAttempt >= 15000) {
+                lastWiFiReconnectAttempt = now;
+                Serial.println("WiFi dropped. Attempting background auto-reconnect...");
+                wifiMgr.autoConnect();
+            }
         }
 
-        unsigned long now = millis();
+        // Auto-sync NTP if not yet synced (e.g. boot without internet or reconnected)
+        if (WiFi.status() == WL_CONNECTED && time(nullptr) < 100000) {
+            Serial.println("WiFi connected, syncing NTP clock...");
+            configTime(TIMEZONE_OFFSET_HOURS * 3600, 0, "pool.ntp.org", "time.google.com");
+        }
+
         bool force = requestForceUpdate;
         unsigned long interval = nba.hasLiveGame() ? UPDATE_INTERVAL_LIVE : UPDATE_INTERVAL_NORMAL;
 
