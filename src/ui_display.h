@@ -142,9 +142,9 @@ public:
     void drawStandbyClockPage(NBAClient& nba) {
         spr.fillSprite(C_BG);
 
-        // Get current local time
+        // Get current local time (10ms timeout so it never blocks UI)
         struct tm timeinfo;
-        bool hasTime = getLocalTime(&timeinfo);
+        bool hasTime = getLocalTime(&timeinfo, 10);
 
         char timeHM[10] = "--:--";
         char timeSec[6] = ":--";

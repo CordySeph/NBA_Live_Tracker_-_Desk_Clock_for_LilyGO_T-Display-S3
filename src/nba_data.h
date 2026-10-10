@@ -63,6 +63,35 @@ public:
     void flush() override {}
 };
 
+// Custom Allocator for ArduinoJson 7 to allocate DOM tree in PSRAM instead of scarce internal SRAM
+class PsramAllocator : public ArduinoJson::Allocator {
+public:
+    void* allocate(size_t size) override {
+        if (psramFound()) {
+            void* p = ps_malloc(size);
+            if (p) return p;
+        }
+        return malloc(size);
+    }
+
+    void deallocate(void* ptr) override {
+        free(ptr);
+    }
+
+    void* reallocate(void* ptr, size_t new_size) override {
+        if (psramFound()) {
+            void* p = ps_realloc(ptr, new_size);
+            if (p) return p;
+        }
+        return realloc(ptr, new_size);
+    }
+
+    static PsramAllocator* instance() {
+        static PsramAllocator alloc;
+        return &alloc;
+    }
+};
+
 struct TeamInfo {
     String abbreviation;
     String displayName;
@@ -96,6 +125,8 @@ struct ConferenceStandings {
 
 class NBAClient {
 public:
+    SemaphoreHandle_t mutex = nullptr;
+
     std::vector<GameData> allGames;
     GameData favoriteGame;
     GameData lastGame;
@@ -118,6 +149,21 @@ public:
         nextGame.isValid = false;
     }
 
+    void initMutex() {
+        if (!mutex) {
+            mutex = xSemaphoreCreateMutex();
+        }
+    }
+
+    bool lock(TickType_t timeout = portMAX_DELAY) {
+        if (mutex) return (xSemaphoreTake(mutex, timeout) == pdTRUE);
+        return true;
+    }
+
+    void unlock() {
+        if (mutex) xSemaphoreGive(mutex);
+    }
+
     void setFavoriteTeam(const String& team) {
         favTeamOverride = team;
     }
@@ -135,26 +181,38 @@ public:
 
     bool updateData(bool forceStandings = false) {
         if (WiFi.status() != WL_CONNECTED) {
+            lock();
             lastStatusMsg = "WiFi not connected";
+            unlock();
             return false;
         }
 
+        lock();
         lastStatusMsg = "Fetching...";
+        unlock();
+
         bool ok = fetchScoreboard();
 
         // Fetch team schedule to get next game countdown and last game recap
         fetchFavoriteSchedule();
 
-        // Fetch standings if forced, empty, or 15 mins passed
-        if (forceStandings || conferences.empty() || (millis() - lastStandingsFetch > 15 * 60 * 1000)) {
+        // Fetch standings if forced, or 15 mins passed, or empty but at least 5 mins since last attempt
+        unsigned long nowMs = millis();
+        bool needStandings = forceStandings || 
+                             (conferences.empty() && (nowMs - lastStandingsFetch > 5 * 60 * 1000)) ||
+                             (nowMs - lastStandingsFetch > 15 * 60 * 1000);
+        if (needStandings) {
             fetchStandings();
         }
 
+        lock();
         if (ok || favoriteGame.isValid || lastGame.isValid) {
             lastFetchTime = millis();
             lastStatusMsg = "Updated (" + String(allGames.size()) + " games)";
+            unlock();
             return true;
         } else {
+            unlock();
             return false;
         }
     }
@@ -219,22 +277,28 @@ private:
 
     bool fetchScoreboard() {
         WiFiClient client;
+        client.setTimeout(6);
         HTTPClient http;
-        http.setTimeout(12000);
+        http.setTimeout(6000);
+        http.setReuse(false);
         
         String url = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard";
         http.begin(client, url);
 
         int httpCode = http.GET();
         if (httpCode != HTTP_CODE_OK) {
+            lock();
             lastStatusMsg = "HTTP Err " + String(httpCode);
+            unlock();
             http.end();
             return false;
         }
 
         PsramStream psramStream(131072);
         if (!psramStream.buffer) {
+            lock();
             lastStatusMsg = "PSRAM Alloc Fail";
+            unlock();
             http.end();
             return false;
         }
@@ -243,22 +307,24 @@ private:
         http.end();
 
         if (written <= 0 || psramStream.length == 0) {
+            lock();
             lastStatusMsg = "Empty response (" + String(written) + ")";
+            unlock();
             return false;
         }
 
-        // Set up filter for ArduinoJson 7
-        JsonDocument filter;
+        // Set up filter for ArduinoJson 7 in PSRAM
+        JsonDocument filter(PsramAllocator::instance());
         filter["events"][0]["id"] = true;
         filter["events"][0]["status"]["type"]["state"] = true;
         filter["events"][0]["status"]["type"]["shortDetail"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["score"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["homeAway"] = true;
-        filter["events"][0]["competitions"][0]["competitors"][0]["records"][0]["summary"] = true;
+        filter["events"][0]["competitions"][0]["records"][0]["summary"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
 
-        JsonDocument doc;
+        JsonDocument doc(PsramAllocator::instance());
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
@@ -267,12 +333,17 @@ private:
         );
 
         if (error) {
+            lock();
             lastStatusMsg = "JSON: " + String(error.c_str());
+            unlock();
             return false;
         }
 
-        allGames.clear();
-        favoriteGame.isValid = false;
+        std::vector<GameData> parsedGames;
+        GameData parsedFav;
+        parsedFav.isValid = false;
+        GameData parsedLast;
+        parsedLast.isValid = false;
 
         JsonArray events = doc["events"].as<JsonArray>();
         for (JsonObject ev : events) {
@@ -303,24 +374,41 @@ private:
                 }
             }
 
-            allGames.push_back(game);
+            parsedGames.push_back(game);
 
             if (game.isFavorite) {
-                favoriteGame = game;
+                parsedFav = game;
                 if (game.state == "post") {
-                    lastGame = game;
+                    parsedLast = game;
                 }
             }
         }
 
-        return (allGames.size() > 0);
+        lock();
+        allGames = std::move(parsedGames);
+        if (parsedFav.isValid) {
+            favoriteGame = parsedFav;
+        }
+        if (parsedLast.isValid) {
+            lastGame = parsedLast;
+        }
+        size_t totalParsed = allGames.size();
+        unlock();
+
+        return (totalParsed > 0);
     }
 
     bool fetchFavoriteSchedule() {
         WiFiClient client;
+        client.setTimeout(6);
         HTTPClient http;
-        http.setTimeout(12000);
-        String url = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/gs/schedule";
+        http.setTimeout(6000);
+        http.setReuse(false);
+
+        String teamCode = (favTeamOverride.length() > 0) ? favTeamOverride : FAVORITE_TEAM;
+        teamCode.toLowerCase();
+        if (teamCode == "gsw") teamCode = "gs";
+        String url = "http://site.api.espn.com/apis/site/v2/sports/basketball/nba/teams/" + teamCode + "/schedule";
         http.begin(client, url);
 
         int httpCode = http.GET();
@@ -340,7 +428,7 @@ private:
 
         if (written <= 0 || psramStream.length == 0) return false;
 
-        JsonDocument filter;
+        JsonDocument filter(PsramAllocator::instance());
         filter["events"][0]["id"] = true;
         filter["events"][0]["name"] = true;
         filter["events"][0]["date"] = true;
@@ -351,7 +439,7 @@ private:
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["abbreviation"] = true;
         filter["events"][0]["competitions"][0]["competitors"][0]["team"]["shortDisplayName"] = true;
 
-        JsonDocument doc;
+        JsonDocument doc(PsramAllocator::instance());
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
@@ -366,7 +454,16 @@ private:
         JsonArray events = doc["events"].as<JsonArray>();
         if (events.isNull() || events.size() == 0) return false;
 
+        GameData tempFav;
+        tempFav.isValid = false;
+        GameData tempLast;
+        tempLast.isValid = false;
+        GameData tempNext;
+        tempNext.isValid = false;
+        time_t tempNextEpoch = 0;
+        String tempNextFormatted = "";
         bool foundNext = false;
+
         for (JsonObject ev : events) {
             String state = ev["competitions"][0]["status"]["type"]["state"].as<String>();
 
@@ -393,30 +490,47 @@ private:
             }
 
             if (state == "in") {
-                favoriteGame = game;
+                tempFav = game;
             } else if (state == "post") {
-                lastGame = game;
+                tempLast = game;
             } else if (state == "pre" && !foundNext) {
-                nextGame = game;
+                tempNext = game;
                 String isoDate = ev["date"].as<String>();
-                nextGameEpoch = parseIso8601(isoDate);
-                nextGameFormatted = formatLocalMatchDate(nextGameEpoch, TIMEZONE_OFFSET_HOURS);
+                tempNextEpoch = parseIso8601(isoDate);
+                tempNextFormatted = formatLocalMatchDate(tempNextEpoch, TIMEZONE_OFFSET_HOURS);
                 foundNext = true;
             }
         }
 
+        lock();
+        if (tempFav.isValid) {
+            favoriteGame = tempFav;
+        }
+        if (tempLast.isValid) {
+            lastGame = tempLast;
+        }
+        if (tempNext.isValid) {
+            nextGame = tempNext;
+            nextGameEpoch = tempNextEpoch;
+            nextGameFormatted = tempNextFormatted;
+        }
         if (!favoriteGame.isValid) {
             if (lastGame.isValid) favoriteGame = lastGame;
             else if (nextGame.isValid) favoriteGame = nextGame;
         }
+        unlock();
 
         return true;
     }
 
     bool fetchStandings() {
+        lastStandingsFetch = millis(); // Mark attempt time immediately to avoid retry storm!
+
         WiFiClient client;
+        client.setTimeout(8);
         HTTPClient http;
-        http.setTimeout(15000);
+        http.setTimeout(8000);
+        http.setReuse(false);
         String url = "http://site.api.espn.com/apis/v2/sports/basketball/nba/standings";
         http.begin(client, url);
 
@@ -437,14 +551,14 @@ private:
 
         if (written <= 0 || psramStream.length == 0) return false;
 
-        JsonDocument filter;
+        JsonDocument filter(PsramAllocator::instance());
         filter["children"][0]["name"] = true;
         filter["children"][0]["standings"]["entries"][0]["team"]["abbreviation"] = true;
         filter["children"][0]["standings"]["entries"][0]["team"]["shortDisplayName"] = true;
         filter["children"][0]["standings"]["entries"][0]["stats"][0]["name"] = true;
         filter["children"][0]["standings"]["entries"][0]["stats"][0]["displayValue"] = true;
 
-        JsonDocument doc;
+        JsonDocument doc(PsramAllocator::instance());
         DeserializationError error = deserializeJson(
             doc, 
             psramStream.buffer, 
@@ -456,7 +570,10 @@ private:
             return false;
         }
 
-        conferences.clear();
+        std::vector<ConferenceStandings> tempConferences;
+        int tempFavRank = 0;
+        String tempFavConf = "West";
+
         JsonArray children = doc["children"].as<JsonArray>();
         for (JsonObject conf : children) {
             ConferenceStandings cs;
@@ -479,17 +596,24 @@ private:
                 }
 
                 if (se.isFavorite) {
-                    favoriteRank = se.rank;
-                    favoriteConference = (cs.name.indexOf("West") >= 0) ? "West" : "East";
+                    tempFavRank = se.rank;
+                    tempFavConf = (cs.name.indexOf("West") >= 0) ? "West" : "East";
                 }
 
                 cs.entries.push_back(se);
             }
 
-            conferences.push_back(cs);
+            tempConferences.push_back(cs);
         }
 
-        lastStandingsFetch = millis();
+        lock();
+        conferences = std::move(tempConferences);
+        if (tempFavRank > 0) {
+            favoriteRank = tempFavRank;
+            favoriteConference = tempFavConf;
+        }
+        unlock();
+
         return true;
     }
 };

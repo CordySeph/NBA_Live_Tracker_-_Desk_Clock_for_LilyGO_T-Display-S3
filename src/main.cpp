@@ -29,13 +29,22 @@ unsigned long lastBtn2DebounceTime = 0;
 unsigned long btn1PressStart = 0;
 const unsigned long DEBOUNCE_DELAY = 180; // ms
 
-// Timer tracking
-unsigned long lastUpdateAttempt = 0;
+// Timer tracking for UI
 unsigned long lastClockTick = 0;
+
+// FreeRTOS background task on Core 0
+TaskHandle_t nbaTaskHandle = nullptr;
+volatile bool requestForceUpdate = false;
+volatile bool needsDisplayRefresh = false;
 
 void refreshDisplay() {
     if (wifiMgr.portalRunning) {
         ui.drawPortalScreen("NBA-Display-Setup", "192.168.4.1");
+        return;
+    }
+
+    if (!nba.lock(pdMS_TO_TICKS(50))) {
+        // If locked for writing by background task, skip this render frame to avoid stutter
         return;
     }
 
@@ -64,6 +73,58 @@ void refreshDisplay() {
             ui.drawStandbyClockPage(nba);
         }
     }
+
+    nba.unlock();
+}
+
+void nbaBackgroundUpdateTask(void* pvParameters) {
+    Serial.println("Background NBA Task started on Core 0");
+    unsigned long lastUpdateAttempt = 0;
+
+    while (true) {
+        if (wifiMgr.portalRunning) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
+
+        // Auto-reconnect if dropped
+        if (WiFi.status() != WL_CONNECTED) {
+            wifiMgr.autoConnect();
+        }
+
+        unsigned long now = millis();
+        bool force = requestForceUpdate;
+        unsigned long interval = nba.hasLiveGame() ? UPDATE_INTERVAL_LIVE : UPDATE_INTERVAL_NORMAL;
+
+        if (WiFi.status() == WL_CONNECTED && (force || (now - lastUpdateAttempt >= interval))) {
+            requestForceUpdate = false;
+            lastUpdateAttempt = now;
+
+            Serial.println("Background updating NBA data...");
+            bool wasFavLive = nba.hasFavoriteLiveGame();
+            nba.updateData(force);
+            bool isFavLive = nba.hasFavoriteLiveGame();
+
+            // Auto-switch to Live Mode when favorite team game just started!
+            if (!wasFavLive && isFavLive && !userNavigatedManually) {
+                Serial.println("Favorite team is live! Auto-switching to Live Scoreboard.");
+                currentMode = 1;
+            } 
+            // Auto-return to Standby Clock when favorite team game ends
+            else if (wasFavLive && !isFavLive && !userNavigatedManually && currentMode == 1) {
+                Serial.println("Favorite game finished. Auto-returning to Standby Clock.");
+                currentMode = 0;
+            }
+
+            needsDisplayRefresh = true;
+        }
+
+        // Sleep in small increments to be responsive to force refresh
+        for (int i = 0; i < 20; i++) {
+            if (requestForceUpdate || wifiMgr.portalRunning) break;
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
 }
 
 void setup() {
@@ -81,6 +142,7 @@ void setup() {
     // Initialize Multi-WiFi Manager
     wifiMgr.init();
     nba.setFavoriteTeam(wifiMgr.favoriteTeam);
+    nba.initMutex();
 
     // Check if BOOT button is held on power up -> force portal mode
     if (digitalRead(PIN_BUTTON_1) == LOW) {
@@ -97,16 +159,16 @@ void setup() {
 
     if (connected) {
         Serial.println("Wi-Fi connected! IP: " + WiFi.localIP().toString());
+        nba.lock();
         nba.lastStatusMsg = "WiFi OK";
+        nba.unlock();
 
         // Sync real-time clock via NTP (Thailand UTC+7)
         configTime(TIMEZONE_OFFSET_HOURS * 3600, 0, "pool.ntp.org", "time.google.com");
 
-        // Fetch scores & standings
+        // Initial fetch
         nba.updateData(true);
 
-        // If favorite team is playing live right now, show Live Match (Mode 1);
-        // otherwise always default to Standby Desk Clock & Upcoming Match Countdown (Mode 0)
         if (nba.hasFavoriteLiveGame()) {
             currentMode = 1;
         } else {
@@ -116,6 +178,17 @@ void setup() {
         Serial.println("No saved Wi-Fi found. Starting Setup Portal...");
         wifiMgr.startPortal();
     }
+
+    // Start background network task on Core 0 (16KB stack)
+    xTaskCreatePinnedToCore(
+        nbaBackgroundUpdateTask,
+        "nba_update",
+        16384,
+        NULL,
+        1,
+        &nbaTaskHandle,
+        0
+    );
 
     refreshDisplay();
 }
@@ -152,7 +225,10 @@ void loop() {
                 currentMode = 2;
                 allGamesPageIndex = 0;
             } else if (currentMode == 2) {
+                nba.lock();
                 int totalGames = nba.allGames.size();
+                nba.unlock();
+
                 int totalPages = (totalGames + 2) / 3;
                 if (totalPages == 0) totalPages = 1;
 
@@ -164,16 +240,21 @@ void loop() {
                     standingsPageIndex = 0;
                 }
             } else if (currentMode == 3) {
-                if (!nba.conferences.empty()) {
-                    const auto& conf = nba.conferences[standingsConfIndex];
-                    int totalPages = (conf.entries.size() + 3) / 4;
+                nba.lock();
+                bool hasConfs = !nba.conferences.empty();
+                size_t confCount = nba.conferences.size();
+                size_t entryCount = hasConfs ? nba.conferences[standingsConfIndex].entries.size() : 0;
+                nba.unlock();
+
+                if (hasConfs) {
+                    int totalPages = (entryCount + 3) / 4;
                     if (totalPages == 0) totalPages = 1;
 
                     standingsPageIndex++;
                     if (standingsPageIndex >= totalPages) {
                         standingsPageIndex = 0;
                         standingsConfIndex++;
-                        if (standingsConfIndex >= (int)nba.conferences.size()) {
+                        if (standingsConfIndex >= (int)confCount) {
                             // Standings done -> Back to Standby Clock (or Live if match active)
                             currentMode = nba.hasFavoriteLiveGame() ? 1 : 0;
                             userNavigatedManually = false;
@@ -208,46 +289,19 @@ void loop() {
         lastBtn1State = reading1;
 
         if (reading1 == HIGH && (now - btn1PressStart < 3000) && (now - btn1PressStart > 50)) { // Short press release
-            Serial.println("BTN1 short press: Force refresh");
+            Serial.println("BTN1 short press: Trigger background force refresh");
+            nba.lock();
             nba.lastStatusMsg = "Updating...";
-            refreshDisplay();
-
-            nba.updateData(true);
+            nba.unlock();
+            requestForceUpdate = true;
             refreshDisplay();
         }
     }
 
-    // ----------------------------------------------------
-    // Automatic Background Polling for Scores
-    // ----------------------------------------------------
-    unsigned long interval = nba.hasLiveGame() ? UPDATE_INTERVAL_LIVE : UPDATE_INTERVAL_NORMAL;
-    if (now - lastUpdateAttempt >= interval) {
-        lastUpdateAttempt = now;
-
-        // Auto-reconnect if dropped
-        if (WiFi.status() != WL_CONNECTED) {
-            wifiMgr.autoConnect();
-        }
-
-        if (WiFi.status() == WL_CONNECTED) {
-            Serial.println("Auto updating scores...");
-            bool wasFavLive = nba.hasFavoriteLiveGame();
-            nba.updateData(false);
-            bool isFavLive = nba.hasFavoriteLiveGame();
-
-            // Auto-switch to Live Mode when favorite team game just started!
-            if (!wasFavLive && isFavLive && !userNavigatedManually) {
-                Serial.println("Favorite team is live! Auto-switching to Live Scoreboard.");
-                currentMode = 1;
-            } 
-            // Auto-return to Standby Clock when favorite team game ends
-            else if (wasFavLive && !isFavLive && !userNavigatedManually && currentMode == 1) {
-                Serial.println("Favorite game finished. Auto-returning to Standby Clock.");
-                currentMode = 0;
-            }
-
-            refreshDisplay();
-        }
+    // If background task updated data, refresh screen
+    if (needsDisplayRefresh) {
+        needsDisplayRefresh = false;
+        refreshDisplay();
     }
 
     // ----------------------------------------------------
