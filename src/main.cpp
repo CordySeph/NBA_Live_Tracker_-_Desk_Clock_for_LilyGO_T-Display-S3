@@ -123,10 +123,17 @@ void nbaBackgroundUpdateTask(void* pvParameters) {
                 Serial.println("Favorite team is live! Auto-switching to Live Scoreboard.");
                 currentMode = 1;
             } 
-            // Auto-return to Standby Clock when favorite team game ends
+            // Auto-return to Standby Clock only when favorite team game has genuinely finished (state == "post")
             else if (wasFavLive && !isFavLive && !userNavigatedManually && currentMode == 1) {
-                Serial.println("Favorite game finished. Auto-returning to Standby Clock.");
-                currentMode = 0;
+                nba.lock();
+                bool genuinelyFinished = (nba.favoriteGame.isValid && nba.favoriteGame.state == "post");
+                nba.unlock();
+                if (genuinelyFinished) {
+                    Serial.println("Favorite game finished. Auto-returning to Standby Clock.");
+                    currentMode = 0;
+                } else {
+                    Serial.println("Favorite game not marked finished yet; keeping scoreboard active.");
+                }
             }
 
             needsDisplayRefresh = true;

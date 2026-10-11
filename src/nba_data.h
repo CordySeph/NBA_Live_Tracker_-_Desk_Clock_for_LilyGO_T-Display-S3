@@ -492,7 +492,8 @@ private:
         }
 
         lock();
-        if (tempFav.isValid) {
+        // NEVER overwrite favoriteGame if it's already live or populated by fetchScoreboard
+        if (tempFav.isValid && !favoriteGame.isValid) {
             favoriteGame = tempFav;
         }
         if (tempLast.isValid) {
