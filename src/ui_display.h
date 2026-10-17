@@ -249,7 +249,13 @@ public:
         spr.drawFastHLine(0, 148, 320, C_CARD_BORDER);
         spr.setTextDatum(ML_DATUM);
         spr.setTextColor(C_GRAY, C_BG);
-        spr.drawString("Standby Clock", 8, 159, 2);
+        String footerMsg = nba.lastStatusMsg;
+        if (footerMsg.length() == 0) footerMsg = "Standby Clock";
+        if (nba.lastFetchTime > 0 && WiFi.status() == WL_CONNECTED) {
+            unsigned long secAgo = (millis() - nba.lastFetchTime) / 1000;
+            footerMsg += " (" + String(secAgo) + "s)";
+        }
+        spr.drawString(footerMsg, 8, 159, 2);
 
         spr.setTextDatum(MR_DATUM);
         spr.setTextColor(C_GSW_GOLD, C_BG);

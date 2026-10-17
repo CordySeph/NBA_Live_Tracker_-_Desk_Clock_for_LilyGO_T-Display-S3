@@ -281,7 +281,7 @@ private:
             return false;
         }
 
-        PsramStream psramStream(131072);
+        PsramStream psramStream(262144);
         if (!psramStream.buffer) {
             lock();
             lastStatusMsg = "PSRAM Alloc Fail";
@@ -405,7 +405,7 @@ private:
             return false;
         }
 
-        PsramStream psramStream(131072);
+        PsramStream psramStream(262144);
         if (!psramStream.buffer) {
             http.end();
             return false;
@@ -492,8 +492,9 @@ private:
         }
 
         lock();
-        // NEVER overwrite favoriteGame if it's already live or populated by fetchScoreboard
-        if (tempFav.isValid && !favoriteGame.isValid) {
+        // NEVER overwrite favoriteGame if it's already live or populated by fetchScoreboard.
+        // Also ensure tempFav is not set with empty scores ("-") when a live match is on.
+        if (tempFav.isValid && !favoriteGame.isValid && tempFav.home.score != "-" && tempFav.away.score != "-") {
             favoriteGame = tempFav;
         }
         if (tempLast.isValid) {
