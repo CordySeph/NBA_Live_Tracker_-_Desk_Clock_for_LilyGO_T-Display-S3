@@ -144,3 +144,7 @@ Connect your LilyGO T-Display-S3 via USB-C and execute:
 ```bash
 .venv/bin/pio run -t monitor
 ```
+# support
+```bash
+BTC : bc1qg5z9z9cmuye7e8ls7qqc7szurecwxm6xqlg9mk
+```
